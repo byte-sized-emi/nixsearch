@@ -58,14 +58,14 @@ pub fn render(document: &SearchDocument, config: &AppConfig) -> Markup {
                 ].into_iter()
                     .filter_map(|(k, v)| v.map(|val| (k, val)))
                     .collect();
-                @if !summary.is_empty() {
+                @if !summary.is_empty() || package.broken == Some(true) {
                     (section("Package info", html! {
                         ul {
                             @for (key, value) in &summary {
                                 li { (key) ": " code { (value) } }
                             }
-                            @if let Some(broken) = package.broken {
-                                li { "broken: " (broken) }
+                            @if package.broken == Some(true) {
+                                li.package-broken { "broken: true" }
                             }
                         }
                     }))
@@ -188,4 +188,43 @@ fn code_tags_section(title: &str, values: &[String]) -> Markup {
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use nixsearch_core::document::SearchDocument;
+    use nixsearch_test_support::{app_config, package_doc};
+
+    use super::render;
+
+    #[test]
+    fn package_broken_bullet_only_renders_when_broken() {
+        let config = app_config("./data/indexes");
+
+        for broken in [None, Some(false), Some(true)] {
+            for with_summary in [false, true] {
+                let SearchDocument::Package(mut package) = package_doc("git", "Version control")
+                else {
+                    unreachable!();
+                };
+                package.broken = broken;
+                if !with_summary {
+                    package.pname = None;
+                    package.version = None;
+                }
+                let html = render(&SearchDocument::Package(package), &config).into_string();
+
+                assert_eq!(
+                    html.contains(r#"<li class="package-broken">broken: true</li>"#),
+                    broken == Some(true)
+                );
+                assert!(!html.contains("broken: false"));
+                assert!(html.contains("Version control"));
+                assert_eq!(
+                    html.contains("Package info"),
+                    with_summary || broken == Some(true)
+                );
+            }
+        }
+    }
 }

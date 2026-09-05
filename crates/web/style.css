@@ -931,6 +931,10 @@ dialog::backdrop {
   border-color: var(--text-dim);
 }
 
+.package-broken {
+  color: #f87171;
+}
+
 .entry-section {
   margin-top: 1rem;
 }
