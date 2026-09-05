@@ -255,8 +255,29 @@ mod tests {
     fn navigation_script_routes_page_replacements_through_navigation() {
         let script = navigation_script();
 
-        assert!(script.contains("navigate(target, { push: false });"));
+        assert!(script.contains("navigate(target, { push: false, scroll: false });"));
         assert!(!script.contains("history.replaceState(historyStateWithMetadata"));
+    }
+
+    #[test]
+    fn navigation_script_positions_explicit_pages_and_history_navigation() {
+        let script = navigation_script();
+
+        assert!(
+            script.contains("scroll && currentPageFromUrl(current) !== currentPageFromUrl(target)")
+        );
+        assert!(script.contains("scrollToResultPage(currentPageFromUrl(target));"));
+        assert!(script.contains(
+            "!loadsResults && currentPageFromUrl(previous) !== currentPageFromUrl(current)"
+        ));
+        assert!(script.contains("scrollToResultPage(currentPageFromUrl(current));"));
+        assert!(
+            script.contains("virtualResults.topSpacerHeight + offset * virtualResults.rowHeight")
+        );
+        assert!(script.contains(
+            "initializeVirtualResults();\n    scrollToResultPage(currentPageFromUrl());"
+        ));
+        assert!(script.contains("history.scrollRestoration = \"manual\";"));
     }
 
     #[test]

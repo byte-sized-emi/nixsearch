@@ -1982,13 +1982,17 @@ mod tests {
         let fixture = reconciled_generation_fixture();
 
         let uri = with_generation(
-            "/-/state/events?url=%2F%3Fq%3Dgit",
+            "/-/state/events?url=%2F%3Fq%3Dgit%26page%3D2&previous_url=%2F%3Fq%3Dgit",
             &fixture.old_generation_id,
         );
         let (status, body) = request_body(fixture.app, &uri).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains(&fixture.new_generation_id));
+        assert!(body.contains("nixsearchApplyGenerationChange"));
+        assert!(body.contains(r#""targetUrl":"/?q=git&page=2""#));
+        assert!(body.contains(r#""resultsHtml":"#));
+        assert!(!body.contains("nixsearchApplyResultsPatch"));
     }
 
     #[tokio::test]
@@ -3378,17 +3382,106 @@ mod tests {
         let generation_id = current_generation_id(&index_dir);
 
         let app = test_app(app_config_with_public_url(&index_dir));
-        let uri = with_generation(
-            "/-/state/events?url=%2F%3Fq%3Dgit%26page%3D2&previous_url=%2F%3Fq%3Dgit",
-            &generation_id,
-        );
-        let (status, body) = request_body(app, &uri).await;
+        for (previous_page, page) in [(1, 2), (2, 3), (3, 1)] {
+            let previous_suffix = if previous_page == 1 {
+                String::new()
+            } else {
+                format!("%26page%3D{previous_page}")
+            };
+            let suffix = if page == 1 {
+                String::new()
+            } else {
+                format!("%26page%3D{page}")
+            };
+            let uri = with_generation(
+                &format!(
+                    "/-/state/events?url=%2F%3Fq%3Dgit{suffix}&previous_url=%2F%3Fq%3Dgit{previous_suffix}"
+                ),
+                &generation_id,
+            );
+            let (status, body) = request_body(app.clone(), &uri).await;
 
-        assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("nixsearchApplyHeadMetadata"));
-        assert!(body.contains(" results for git"));
-        assert!(!body.contains(r#""description":"Search the Nix ecosystem""#));
-        assert!(body.contains(r#""robots":"noindex,follow""#));
+            assert_eq!(status, StatusCode::OK, "{previous_page}->{page}");
+            assert!(
+                !body.contains("nixsearchApplyResultsPatch"),
+                "{previous_page}->{page}: {body}"
+            );
+            assert!(!body.contains("nixsearchApplyGenerationChange"));
+            assert!(body.contains("nixsearchApplyHeadMetadata"));
+            assert!(body.contains(" results for git"));
+            assert!(!body.contains(r#""description":"Search the Nix ecosystem""#));
+            assert!(body.contains(r#""canonicalUrl":null"#));
+            assert!(body.contains(r#""robots":"noindex,follow""#));
+        }
+    }
+
+    #[tokio::test]
+    async fn state_events_context_changes_patch_results_when_page_differs() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_fixture_options_index_for_refs(&index_dir, &[REF_SMALL, REF_STABLE]);
+        let generation_id = current_generation_id(&index_dir);
+        let app = test_app(multi_ref_app_config_with_public_url(&index_dir));
+
+        for (context, previous_url, url) in [
+            ("query", "%2F%3Fq%3Dgit", "%2F%3Fq%3Denable%26page%3D2"),
+            (
+                "source",
+                "%2F%3Fq%3Dgit",
+                "%2Ffixtures%3Fq%3Dgit%26page%3D2",
+            ),
+            (
+                "ref",
+                "%2Ffixtures%3Fq%3Dgit%26ref%3Dsmall",
+                "%2Ffixtures%3Fq%3Dgit%26ref%3Dstable%26page%3D2",
+            ),
+            (
+                "ref_set",
+                "%2F%3Fq%3Dgit%26ref_set%3Dsingle",
+                "%2F%3Fq%3Dgit%26ref_set%3Dmulti%26page%3D2",
+            ),
+        ] {
+            let uri = with_generation(
+                &format!("/-/state/events?url={url}&previous_url={previous_url}"),
+                &generation_id,
+            );
+            let (status, body) = request_body(app.clone(), &uri).await;
+
+            assert_eq!(status, StatusCode::OK, "{context}");
+            assert!(
+                body.contains("nixsearchApplyResultsPatch"),
+                "{context}: {body}"
+            );
+            assert!(!body.contains("nixsearchApplyGenerationChange"));
+        }
+    }
+
+    #[tokio::test]
+    async fn state_events_missing_or_invalid_previous_context_patches_results() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+        let generation_id = current_generation_id(&index_dir);
+        let app = test_app(app_config_with_public_url(&index_dir));
+
+        for previous in [
+            "",
+            "&previous_url=%2F%3Fq%3Dgit%26page%3Dinvalid",
+            "&previous_url=%2Fmissing%3Fq%3Dgit",
+        ] {
+            let uri = with_generation(
+                &format!("/-/state/events?url=%2F%3Fq%3Dgit%26page%3D2{previous}"),
+                &generation_id,
+            );
+            let (status, body) = request_body(app.clone(), &uri).await;
+
+            assert_eq!(status, StatusCode::OK, "{previous}");
+            assert!(
+                body.contains("nixsearchApplyResultsPatch"),
+                "{previous}: {body}"
+            );
+            assert!(!body.contains("nixsearchApplyGenerationChange"));
+        }
     }
 
     #[tokio::test]

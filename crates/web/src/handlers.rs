@@ -743,8 +743,8 @@ fn state_events_navigation(
 
     match resolve_page_state(state, snapshot, previous_request) {
         Ok(previous_state) => {
+            // Page is a position within this collection, not a new results context.
             let patch_results = previous_state.q != next_state.q
-                || previous_state.page != next_state.page
                 || previous_state.source_filter != next_state.source_filter
                 || previous_state.source_ref != next_state.source_ref
                 || previous_state.active_ref_set() != next_state.active_ref_set();

@@ -289,31 +289,45 @@
     const target = url.pathname + url.search;
     if (target === previous) return;
 
-    navigate(target, { push: false });
+    navigate(target, { push: false, scroll: false });
   }
 
-  function currentPageFromUrl() {
+  function currentPageFromUrl(url = window.location.href) {
     const page = parseInt(
-      new URLSearchParams(window.location.search).get("page") || "1",
+      new URL(url, window.location.href).searchParams.get("page") || "1",
       10,
     );
     return Number.isFinite(page) ? Math.max(1, page) : 1;
   }
 
   function scrollToResultPage(page) {
-    if (page <= 1) return false;
+    if (page <= 1) {
+      window.scrollTo(0, 0);
+      return true;
+    }
 
     const row = document.querySelector(
       `#results-body tr[data-result-page="${CSS.escape(String(page))}"]`,
     );
-    if (!row) return false;
-
     const header = document.querySelector(".header");
-    const top =
-      window.scrollY +
-      row.getBoundingClientRect().top -
-      (header ? header.offsetHeight : 0);
+    let top;
+    if (virtualResults) {
+      // Invert virtualOffsetAtViewport so unmounted pages can be reached too.
+      const offset = Math.min(
+        (page - 1) * PAGE_SIZE,
+        virtualResults.total - 1,
+      );
+      top =
+        window.scrollY + virtualResults.tbody.getBoundingClientRect().top -
+        virtualResults.topSpacerHeight + offset * virtualResults.rowHeight;
+    } else if (row) {
+      top = window.scrollY + row.getBoundingClientRect().top;
+    } else {
+      return false;
+    }
+    top -= header ? header.offsetHeight : 0;
     window.scrollTo(0, Math.max(0, top));
+    scheduleVirtualLoad();
     return true;
   }
 
@@ -417,6 +431,7 @@
 
   function finishResultsPatch() {
     initializeVirtualResults();
+    scrollToResultPage(currentPageFromUrl());
     scheduleVisiblePageSync();
     scheduleVirtualLoad();
     setLoading(false);
@@ -1125,6 +1140,7 @@
       onRestoreMetadata = null,
       reconcileMode = "always",
       reconcileSameUrl = false,
+      scroll = true,
     } = {},
   ) {
     const next = new URL(url, window.location.href);
@@ -1194,6 +1210,10 @@
     setLoading(loadsResults);
     if (loadsResults) {
       window.scrollTo(0, 0);
+    } else if (
+      scroll && currentPageFromUrl(current) !== currentPageFromUrl(target)
+    ) {
+      scrollToResultPage(currentPageFromUrl(target));
     }
     if (
       reconcileMode === "unless-restored" &&
@@ -1589,6 +1609,11 @@
       exactHeadMetadataFromState(evt.state, current),
     );
     setLoading(loadsResults);
+    if (
+      !loadsResults && currentPageFromUrl(previous) !== currentPageFromUrl(current)
+    ) {
+      scrollToResultPage(currentPageFromUrl(current));
+    }
     if (
       isPopstateModalClose(previous, current) &&
       restoredMetadata &&
