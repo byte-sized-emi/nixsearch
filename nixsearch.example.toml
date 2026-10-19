@@ -112,6 +112,7 @@ url_prefix = "https://example.com/blob/main/"
 [sources.eval-fixture.refs.local.producer]
 type = "eval-modules"
 ref = "path:./fixtures/eval-modules-flake"
+inputs.nixpkgs = "github:NixOS/nixpkgs/nixos-unstable"
 
 [[sources.eval-fixture.refs.local.producer.modules]]
 type = "flake-attr"

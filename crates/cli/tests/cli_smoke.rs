@@ -102,3 +102,61 @@ fn missing_config_file_fails_cleanly() {
         .failure()
         .stderr(predicate::str::contains("configuration check failed"));
 }
+
+fn assert_failed_generation_cleans_up(args: &[&str]) {
+    let tempdir = tempdir().unwrap();
+    let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+    let stale = index_dir.join("generations/generation-failed");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("partial"), b"incomplete index").unwrap();
+
+    let config = nixsearch_test_support::config_toml(&index_dir)
+        .replace("options.json", "does-not-exist.json")
+        .replace(
+            "file://./data/artifacts",
+            &format!("file://{}/artifacts", tempdir.path().display()),
+        )
+        + "\n[maintenance.index_generations]\ndelete_failed_after = \"0.000000001s\"\n";
+    let config_path = tempdir.path().join("nixsearch.toml");
+    std::fs::write(&config_path, config).unwrap();
+
+    Command::cargo_bin("nixsearch")
+        .unwrap()
+        .args(args)
+        .arg("--config")
+        .arg(config_path)
+        .assert()
+        .failure();
+
+    assert!(!stale.exists());
+}
+
+#[test]
+fn failed_update_runs_cleanup() {
+    assert_failed_generation_cleans_up(&["update"]);
+}
+
+#[test]
+fn failed_index_rebuild_runs_cleanup() {
+    assert_failed_generation_cleans_up(&["index", "rebuild"]);
+}
+
+#[test]
+fn maintenance_fails_when_configured_nix_cleanup_cannot_run() {
+    let tempdir = tempdir().unwrap();
+    let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+    let config_path = write_config(&tempdir, &index_dir);
+    let mut config = std::fs::read_to_string(&config_path).unwrap();
+    config.push_str("\n[maintenance.nix_store]\ngc = true\n");
+    std::fs::write(&config_path, config).unwrap();
+
+    Command::cargo_bin("nixsearch")
+        .unwrap()
+        .args(["maintenance", "cleanup", "--config"])
+        .arg(config_path)
+        .env("PATH", tempdir.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("nix_gc = skipped"))
+        .stderr(predicate::str::contains("Nix gc did not complete"));
+}

@@ -60,6 +60,8 @@ impl IndexGenerationCleanupConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct NixStoreCleanupConfig {
+    /// Collects the entire selected Nix store, not just nixsearch sources.
+    /// The installation must root its runtime closure (e.g. includeNixDB in Docker).
     pub gc: bool,
     pub optimise: bool,
 }

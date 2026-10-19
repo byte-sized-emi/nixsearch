@@ -144,27 +144,19 @@ fn eval_modules_expression(input: EvalModulesExpression<'_>) -> String {
         r#"
 let
   self = builtins.getFlake {source_ref};
-  nixpkgs = if self ? inputs && self.inputs ? nixpkgs then self.inputs.nixpkgs else null;
-  pkgs =
-    if nixpkgs != null
-    then nixpkgs.legacyPackages.${{builtins.currentSystem}}
-    else import <nixpkgs> {{ }};
-  lib = pkgs.lib;
-  utils =
-    if nixpkgs != null
-    then import "${{nixpkgs}}/nixos/lib/utils.nix" {{
-      inherit lib;
-      config = {{ }};
-      pkgs = null;
-    }}
-    else import <nixpkgs/nixos/lib/utils.nix> {{
-      inherit lib;
-      config = {{ }};
-      pkgs = null;
-    }};
-
   explicitInputs = {{
 {explicit_inputs}
+  }};
+  nixpkgs =
+    if explicitInputs ? nixpkgs then explicitInputs.nixpkgs
+    else if self ? inputs && self.inputs ? nixpkgs then self.inputs.nixpkgs
+    else throw "eval-modules requires a nixpkgs input; set producer.inputs.nixpkgs when the source flake does not provide inputs.nixpkgs";
+  pkgs = nixpkgs.legacyPackages.${{builtins.currentSystem}};
+  lib = pkgs.lib;
+  utils = import "${{nixpkgs}}/nixos/lib/utils.nix" {{
+    inherit lib;
+    config = {{ }};
+    pkgs = null;
   }};
 
   getAttrPath = path: value:
@@ -346,7 +338,10 @@ mod tests {
 
         let producer = EvalModulesProducer::new(
             source_ref.clone(),
-            BTreeMap::new(),
+            BTreeMap::from([(
+                "nixpkgs".to_owned(),
+                "github:NixOS/nixpkgs/nixos-unstable".to_owned(),
+            )]),
             vec![EvalModule::FlakeAttr(EvalModuleRef {
                 flake: "self".to_owned(),
                 attr: "nixosModules.default".to_owned(),
@@ -404,6 +399,8 @@ mod tests {
         assert!(expression.contains("specialArgs"));
         assert!(expression.contains("inherit pkgs lib utils;"));
         assert!(expression.contains("self.inputs.nixpkgs"));
+        assert!(expression.contains("set producer.inputs.nixpkgs"));
+        assert!(!expression.contains("<nixpkgs"));
         assert!(expression.contains("legacyPackages.${builtins.currentSystem}"));
         assert!(
             expression
@@ -418,10 +415,16 @@ mod tests {
 
     #[test]
     fn eval_modules_expression_supports_explicit_inputs_and_module_list_options() {
-        let inputs = BTreeMap::from([(
-            "dependency".to_owned(),
-            "github:example/dependency".to_owned(),
-        )]);
+        let inputs = BTreeMap::from([
+            (
+                "dependency".to_owned(),
+                "github:example/dependency".to_owned(),
+            ),
+            (
+                "nixpkgs".to_owned(),
+                "github:NixOS/nixpkgs/nixos-unstable".to_owned(),
+            ),
+        ]);
 
         let expression = eval_modules_expression(EvalModulesExpression {
             source_ref: "github:example/project",
@@ -447,6 +450,12 @@ mod tests {
                 .contains("\"dependency\" = builtins.getFlake \"github:example/dependency\";")
         );
         assert!(expression.contains("(moduleAttr \"dependency\" \"nixosModules.default\")"));
+        assert!(
+            expression.contains(
+                "\"nixpkgs\" = builtins.getFlake \"github:NixOS/nixpkgs/nixos-unstable\";"
+            )
+        );
+        assert!(expression.contains("if explicitInputs ? nixpkgs then explicitInputs.nixpkgs"));
         assert!(expression.contains("(moduleListOption \"example.extraModules\" ["));
         assert!(expression.contains("(moduleAttr \"self\" \"modules.extra\")"));
     }

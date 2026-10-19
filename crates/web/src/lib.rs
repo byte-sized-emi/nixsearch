@@ -10,7 +10,7 @@ use tower_http::trace::TraceLayer;
 use nixsearch_config::app::AppConfig;
 use nixsearch_index::store::{IndexStore, PublishedGeneration};
 use nixsearch_ops::targets::{TargetCoverage, TargetKey, target_coverage};
-use nixsearch_ops::{generate, lock, seo};
+use nixsearch_ops::{cleanup, generate, lock, seo};
 use nixsearch_service::{SearchService, ServingGenerationPolicy};
 
 mod entry;
@@ -287,9 +287,16 @@ async fn prepare_startup_generation(config: &AppConfig) -> Result<StartupGenerat
         }
     }
 
-    let bootstrap = generate::bootstrap_all_tolerant(config)
-        .await
-        .context("failed to bootstrap current index")?;
+    let bootstrap = match generate::bootstrap_all_tolerant(config).await {
+        Ok(bootstrap) => bootstrap,
+        Err(error) => {
+            match cleanup::cleanup_under_lock(config, &update_lock).await {
+                Ok(report) => cleanup::log_report(&report),
+                Err(error) => tracing::warn!("cleanup after failed bootstrap failed: {error:#}"),
+            }
+            return Err(error).context("failed to bootstrap current index");
+        }
+    };
 
     if bootstrap.is_degraded() {
         tracing::warn!(

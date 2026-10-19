@@ -357,8 +357,6 @@ async fn run_locked_regeneration(
 
     let result = generate::regenerate_all(config).await;
 
-    drop(update_lock);
-
     match result {
         Ok(_) => {
             tracing::info!(
@@ -368,6 +366,12 @@ async fn run_locked_regeneration(
             MaintenanceOutcome::Completed
         }
         Err(error) => {
+            // No reload follows a failed attempt, so post-reload cleanup will
+            // never reclaim its downloaded sources or stale partial indexes.
+            match cleanup::cleanup_under_lock(config, &update_lock).await {
+                Ok(report) => cleanup::log_report(&report),
+                Err(error) => tracing::warn!("cleanup after failed regeneration failed: {error:#}"),
+            }
             tracing::error!("index regeneration failed: {error:#}");
             MaintenanceOutcome::Failed
         }
@@ -563,7 +567,8 @@ mod tests {
     use super::{
         InvalidCurrentAction, MaintenanceOutcome, RegenerationModes, clamp_duration,
         current_generation_needs_regeneration, duration_until, invalid_current_action,
-        missing_configured_targets, next_due, regeneration_modes, run_recovery_regeneration,
+        missing_configured_targets, next_due, regeneration_modes, run_locked_regeneration,
+        run_recovery_regeneration,
     };
 
     #[test]
@@ -576,6 +581,32 @@ mod tests {
 
         assert!(modes.recovery_enabled);
         assert!(!modes.scheduled_enabled);
+    }
+
+    #[tokio::test]
+    async fn failed_regeneration_runs_cleanup_without_a_reload() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        let stale = index_dir.join("generations/generation-failed");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("partial"), b"incomplete index").unwrap();
+
+        let mut config = app_config(&index_dir);
+        config.sources.clear();
+        config.data.artifact_url = format!("file://{}/artifacts", tempdir.path().display());
+        config.maintenance.index_generations.delete_failed_after = "0.000000001s".to_owned();
+        let update_lock = nixsearch_ops::lock::acquire_update_lock(&index_dir).unwrap();
+
+        assert_eq!(
+            run_locked_regeneration(&config, update_lock).await,
+            MaintenanceOutcome::Failed
+        );
+        assert!(!stale.exists());
+        assert!(
+            nixsearch_ops::lock::try_acquire_update_lock(&index_dir)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

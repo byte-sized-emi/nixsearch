@@ -56,7 +56,7 @@
           ];
         };
 
-        containerWithNix = mkContainer {
+        containerWithNix = (mkContainer {
           name = "nixsearch-with-nix";
           contents = [
             self'.packages.cli
@@ -64,12 +64,11 @@
             pkgs.nix
           ];
           extraEnv = [
-            "NIX_PATH=nixpkgs=${pkgs.path}"
             "NIX_CONFIG=experimental-features = nix-command flakes\nbuild-users-group ="
             "NIX_SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
             "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
           ];
-        };
+        }).override { includeNixDB = true; };
       };
     };
 }

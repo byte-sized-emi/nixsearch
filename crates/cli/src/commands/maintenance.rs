@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use nixsearch_config::app::AppConfig;
 use nixsearch_ops::cleanup::{self, CleanupReport, NixCleanupOutcome};
@@ -10,6 +10,15 @@ pub(super) async fn cleanup(args: ConfigArgs) -> Result<()> {
     let report = cleanup::cleanup_locked(&config).await?;
 
     print_report(&report);
+
+    for outcome in report.nix_gc.iter().chain(report.nix_optimise.iter()) {
+        if !outcome.success {
+            bail!(
+                "Nix {} did not complete; see cleanup report",
+                outcome.operation
+            );
+        }
+    }
 
     Ok(())
 }
@@ -78,5 +87,8 @@ fn print_nix_outcome(outcome: &NixCleanupOutcome) {
 
     if let Some(status_code) = outcome.status_code {
         println!("    status = {status_code}");
+    }
+    if let Some(error) = &outcome.error {
+        println!("    error = {error}");
     }
 }

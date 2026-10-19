@@ -64,17 +64,21 @@ pub(super) async fn update(args: SelectionArgs) -> Result<()> {
         bail!("no refs available to index");
     }
 
-    build_and_publish_generation(
+    let result = build_and_publish_generation(
         &index_store,
         &store,
         included_targets.into_values().collect(),
         &selected_keys,
         retained_generation.as_ref(),
     )
-    .await?;
-
-    let report = cleanup::cleanup_under_lock(&config, &update_lock).await?;
-    cleanup::log_report(&report);
-
+    .await;
+    match cleanup::cleanup_under_lock(&config, &update_lock).await {
+        Ok(report) => cleanup::log_report(&report),
+        Err(error) if result.is_err() => {
+            tracing::warn!("cleanup after failed generation failed: {error:#}");
+        }
+        Err(error) => return Err(error),
+    }
+    result?;
     Ok(())
 }

@@ -33,11 +33,16 @@ pub(super) async fn rebuild(args: SelectionArgs) -> Result<()> {
     let index_store = IndexStore::new(&config.data.index_dir);
     let refresh_keys: BTreeSet<TargetKey> = targets.iter().map(TargetKey::from).collect();
 
-    build_and_publish_generation(&index_store, &store, targets, &refresh_keys, None).await?;
-
-    let report = cleanup::cleanup_under_lock(&config, &update_lock).await?;
-    cleanup::log_report(&report);
-
+    let result =
+        build_and_publish_generation(&index_store, &store, targets, &refresh_keys, None).await;
+    match cleanup::cleanup_under_lock(&config, &update_lock).await {
+        Ok(report) => cleanup::log_report(&report),
+        Err(error) if result.is_err() => {
+            tracing::warn!("cleanup after failed generation failed: {error:#}");
+        }
+        Err(error) => return Err(error),
+    }
+    result?;
     Ok(())
 }
 
