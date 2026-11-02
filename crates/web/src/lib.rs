@@ -16,6 +16,7 @@ use nixsearch_service::{SearchService, ServingGenerationPolicy};
 mod entry;
 mod handlers;
 mod maintenance;
+mod mcp;
 mod metadata;
 mod opensearch;
 mod origin;
@@ -110,6 +111,8 @@ pub async fn serve(config: AppConfig) -> Result<()> {
 }
 
 fn app_router(state: AppState) -> Router {
+    let mcp = mcp::service(Arc::clone(&state.config), state.search.clone());
+
     let internal_routes = Router::new()
         .route("/health", get(handlers::health))
         .route("/state/events", get(handlers::state_events))
@@ -117,6 +120,7 @@ fn app_router(state: AppState) -> Router {
         .route("/assets/datastar.js", get(handlers::datastar_js))
         .route("/assets/navigation.js", get(handlers::navigation_js))
         .route("/assets/style.css", get(handlers::style_css))
+        .route_service("/mcp", mcp)
         .layer(middleware::map_response(robots::add_noindex_header));
 
     Router::new()
@@ -3509,5 +3513,112 @@ mod tests {
         assert!(body.contains("nixsearchApplyHeadMetadata"));
         assert!(body.contains(r#""canonicalUrl":null"#));
         assert!(body.contains(r#""robots":"noindex,follow""#));
+    }
+
+    const MCP_INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
+
+    async fn mcp_post(app: Router, body: &str) -> (StatusCode, String) {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/-/mcp")
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(Body::from(body.to_owned()))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    async fn mcp_call_tool(app: Router, arguments: &str, name: &str) -> (StatusCode, String) {
+        let (status, body) = mcp_post(app.clone(), MCP_INITIALIZE).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
+        );
+        mcp_post(app, &body).await
+    }
+
+    #[tokio::test]
+    async fn mcp_initialize_advertises_configured_sources() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+        let app = test_app(multi_ref_app_config(&index_dir));
+
+        let (status, body) = mcp_post(app, MCP_INITIALIZE).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains(r#""instructions""#), "{body}");
+        assert!(
+            body.contains("fixtures (options): small*, stable"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_search_tool_returns_one_line_hits() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+        let app = test_app(app_config(&index_dir));
+
+        let (status, body) = mcp_call_tool(app, r#"{"query":"git"}"#, "search").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(r#""isError":false"#), "{body}");
+        assert!(
+            body.contains("fixtures@small option programs.git.enable"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_get_entry_tool_returns_bounded_detail() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+        let app = test_app(app_config(&index_dir));
+
+        let (status, body) = mcp_call_tool(
+            app,
+            r#"{"source":"fixtures","name":"programs.git.enable"}"#,
+            "get_entry",
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(r#""isError":false"#), "{body}");
+        assert!(body.contains("option programs.git.enable"), "{body}");
+        assert!(body.len() <= 16_000, "{} bytes", body.len());
+    }
+
+    #[tokio::test]
+    async fn mcp_search_tool_rejects_out_of_bounds_arguments() {
+        let tempdir = tempdir().unwrap();
+        let index_dir = utf8_path_buf(tempdir.path().join("indexes"));
+        publish_canonical_options_index(&index_dir);
+        let app = test_app(app_config(&index_dir));
+
+        for (arguments, expected) in [
+            (r#"{"query":"git","offset":1000}"#, "offset must be at most"),
+            (r#"{"query":"git","source":"nixpkgs"}"#, "unknown source"),
+        ] {
+            let (status, body) = mcp_call_tool(app.clone(), arguments, "search").await;
+
+            assert_eq!(status, StatusCode::OK, "{arguments}");
+            assert!(body.contains(r#""isError":true"#), "{arguments}: {body}");
+            assert!(body.contains(expected), "{arguments}: {body}");
+        }
+
+        let long_query = format!(r#"{{"query":"{}"}}"#, "x".repeat(300));
+        let (status, body) = mcp_call_tool(app, &long_query, "search").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(r#""isError":true"#), "{body}");
+        assert!(body.contains("at most 256 characters"), "{body}");
     }
 }

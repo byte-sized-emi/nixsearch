@@ -12,7 +12,15 @@ The Nix ecosystem has thousands of packages and options. Many solutions exist to
 - [x] Magical web frontend leveraging [Datastar](https://data-star.dev/)
   - https://nixsearch.thekoppe.com
   - Run it yourself: [example config](/nixsearch.example.toml)
-- [ ] MCP frontend, to easily feed agents with options & source code
+- [x] MCP frontend, to easily feed agents with options & source code
+
+### MCP
+
+The same process serves a read-only MCP server at `/-/mcp` (streamable HTTP, no authentication),
+so it is reached at `http://<server.listen>/-/mcp`. It exposes two tools, `search` and `get_entry`;
+every response is hard-capped in size and page depth, so an unauthenticated client cannot make it
+return or compute arbitrarily much. Agents can start with `search` and ask for a single entry's
+detail afterwards.
 
 ### Public deployment and SEO
 
