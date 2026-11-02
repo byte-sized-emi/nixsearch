@@ -11,7 +11,6 @@ use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabiliti
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData, ServerHandler, schemars, tool, tool_handler, tool_router};
-use tokio::sync::Semaphore;
 
 use nixsearch_config::app::AppConfig;
 use nixsearch_core::document::{DocText, SearchDocument};
@@ -37,8 +36,6 @@ const MAX_RESPONSE_CHARS: usize = 8_000;
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_INSTRUCTIONS_SOURCES: usize = 20;
 const MAX_INSTRUCTIONS_REFS: usize = 6;
-/// ponytail: process-wide cap, no per-client fairness. Add per-IP limiting at the proxy if needed.
-const MAX_CONCURRENT_CALLS: usize = 4;
 
 pub(crate) fn service(
     config: Arc<AppConfig>,
@@ -46,7 +43,6 @@ pub(crate) fn service(
 ) -> StreamableHttpService<SearchServer, NeverSessionManager> {
     let server = SearchServer {
         instructions: instructions_for(&config),
-        permits: Arc::new(Semaphore::new(MAX_CONCURRENT_CALLS)),
         config: Arc::clone(&config),
         search,
     };
@@ -79,7 +75,6 @@ pub(crate) fn service(
 pub(crate) struct SearchServer {
     config: Arc<AppConfig>,
     search: SearchService,
-    permits: Arc<Semaphore>,
     instructions: String,
 }
 
@@ -117,8 +112,7 @@ impl SearchServer {
         &self,
         Parameters(params): Parameters<SearchParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let server = self.clone();
-        self.run_blocking(move || server.search_text(params)).await
+        tool_result(self.search_text(params))
     }
 
     #[tool(
@@ -130,8 +124,7 @@ impl SearchServer {
         &self,
         Parameters(params): Parameters<EntryParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let server = self.clone();
-        self.run_blocking(move || server.entry_text(params)).await
+        tool_result(self.entry_text(params))
     }
 }
 
@@ -145,24 +138,6 @@ impl ServerHandler for SearchServer {
 }
 
 impl SearchServer {
-    async fn run_blocking(
-        &self,
-        work: impl FnOnce() -> Result<String, String> + Send + 'static,
-    ) -> Result<CallToolResult, ErrorData> {
-        let Ok(_permit) = Arc::clone(&self.permits).try_acquire_owned() else {
-            return Ok(tool_error("server is busy; retry shortly"));
-        };
-
-        let text = tokio::task::spawn_blocking(work).await.map_err(|error| {
-            ErrorData::internal_error(format!("tool task failed: {error}"), None)
-        })?;
-
-        Ok(match text {
-            Ok(text) => CallToolResult::success(vec![ContentBlock::text(capped(text))]),
-            Err(message) => tool_error(message),
-        })
-    }
-
     fn search_text(&self, params: SearchParams) -> Result<String, String> {
         let query = params.query.trim().to_owned();
         if query.is_empty() {
@@ -382,6 +357,13 @@ fn instructions_for(config: &AppConfig) -> String {
     }
 
     out
+}
+
+fn tool_result(text: Result<String, String>) -> Result<CallToolResult, ErrorData> {
+    Ok(match text {
+        Ok(text) => CallToolResult::success(vec![ContentBlock::text(capped(text))]),
+        Err(message) => tool_error(message),
+    })
 }
 
 fn tool_error(message: impl Into<String>) -> CallToolResult {
